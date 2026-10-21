@@ -247,3 +247,127 @@ def build_tool_output(
 def error_output(code: str, problems: list[str]) -> str:
     """Tool error handed back to the model so it can correct itself or explain."""
     return json.dumps({"error": code, "problems": problems[:6]}, separators=(",", ":"))
+
+
+# ============================================================================ semantic_search_products (Module 3B)
+# Retrieval by meaning (Titan V2 embeddings + pgvector) for fuzzy needs. Price and RAM remain exact SQL
+# filters inside the same query, so a vector match can never break a stated budget or RAM minimum.
+SEMANTIC_TOOL_NAME = "semantic_search_products"
+SEMANTIC_MAX_LIMIT = 5
+SEMANTIC_MAX_QUERY_CHARS = 200
+_SEMANTIC_ALLOWED_ARGS = frozenset({"query", "max_price", "min_ram_gb", "limit"})
+
+_SEMANTIC_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "The shopper's needs in plain words, e.g. 'light quiet laptop for coding on trains' or "
+                "'good for a student who edits video'. Describe use cases and preferences; do NOT put the "
+                "budget or RAM size here (use max_price and min_ram_gb)."
+            ),
+        },
+        "max_price": {"type": "number", "description": "Maximum price in USD, inclusive (exact filter). Omit if not stated."},
+        "min_ram_gb": {"type": "integer", "description": "Minimum RAM in GB (exact filter). Omit if not stated."},
+        "limit": {"type": "integer", "description": f"Number of products, 1 to {SEMANTIC_MAX_LIMIT}. Omit for {SEMANTIC_MAX_LIMIT}."},
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
+SEMANTIC_TOOL_SPEC: dict[str, Any] = {
+    "toolSpec": {
+        "name": SEMANTIC_TOOL_NAME,
+        "description": (
+            "Find laptops in the SYNTHETIC demo catalog whose specs, use-case tags and descriptions best match "
+            "a natural-language need (portability, quietness, 'good for students', etc.), ranked by similarity. "
+            "Budget and RAM are applied as exact filters. Use search_products instead for exact brands, model "
+            "names or purely numeric requirements."
+        ),
+        "inputSchema": {"json": _SEMANTIC_SCHEMA},
+    }
+}
+
+# Both tools; the search_products definition is the same object as in TOOL_CONFIG.
+RAG_TOOL_CONFIG: dict[str, Any] = {"tools": [*TOOL_CONFIG["tools"], SEMANTIC_TOOL_SPEC]}
+
+
+@dataclass(frozen=True)
+class SemanticArgs:
+    query: str
+    max_price: float | None
+    min_ram_gb: int | None
+    limit: int
+
+
+def parse_semantic_input(data: object) -> SemanticArgs:
+    """Validate a semantic_search_products toolUse `input`. Raises ToolArgumentError (safe to show the model)."""
+    if not isinstance(data, dict):
+        raise ToolArgumentError(["arguments must be a JSON object"])
+    try:
+        size = len(json.dumps(data))
+    except (TypeError, ValueError):
+        raise ToolArgumentError(["arguments must be plain JSON values"]) from None
+    if size > MAX_ARGUMENT_CHARS:
+        raise ToolArgumentError([f"arguments are too long (max {MAX_ARGUMENT_CHARS} characters)"])
+
+    problems: list[str] = []
+    unknown = sorted(str(k)[:30] for k in data if k not in _SEMANTIC_ALLOWED_ARGS)
+    if unknown:
+        problems.append(f"unknown argument(s): {', '.join(unknown[:5])}")
+
+    raw = data.get("query")
+    query = " ".join(raw.split()) if isinstance(raw, str) else ""
+    if not isinstance(raw, str):
+        problems.append("query is required and must be text")
+    elif not query:
+        problems.append("query must not be blank")
+    elif len(query) > SEMANTIC_MAX_QUERY_CHARS:
+        problems.append(f"query must be at most {SEMANTIC_MAX_QUERY_CHARS} characters")
+    elif _CONTROL_CHARS.search(raw):
+        problems.append("query contains unsupported control characters")
+
+    max_price = _number(data.get("max_price"), "max_price", 0, MAX_PRICE, problems)
+    min_ram = _integer(data.get("min_ram_gb"), "min_ram_gb", 1, MAX_RAM_GB, problems)
+    limit = _integer(data.get("limit"), "limit", 1, SEMANTIC_MAX_LIMIT, problems)
+    if problems:
+        raise ToolArgumentError(problems)
+    return SemanticArgs(query, max_price, min_ram, limit if limit is not None else SEMANTIC_MAX_LIMIT)
+
+
+def build_semantic_output(
+    args: SemanticArgs, products: list[dict[str, Any]], calls_remaining: int | None = None
+) -> tuple[str, list[dict[str, Any]]]:
+    """Serialise semantic results for the model (same bounds as build_tool_output).
+
+    The query text is deliberately not echoed back; products carry `similarity` (1 = same meaning).
+    """
+    included = list(products)
+    payload: dict[str, Any] = {
+        "returned": len(included),
+        "applied_filters": {"max_price": args.max_price, "min_ram_gb": args.min_ram_gb, "limit": args.limit},
+        "ranking": "by similarity to the shopper's need; similarity is relative within this result only",
+        "data_notice": DATA_NOTICE,
+        "products": included,
+    }
+    if calls_remaining is not None:
+        payload["calls_remaining"] = calls_remaining
+        if calls_remaining <= 0:
+            payload["instruction"] = "No more searches are allowed for this question. Answer now using the data above."
+    if not included:
+        payload["note"] = (
+            "No products in the catalog passed the price/RAM filters. Do not invent alternatives: tell the user "
+            "nothing matched and suggest relaxing one constraint."
+        )
+
+    def dump() -> str:
+        return json.dumps(payload, separators=(",", ":"))
+
+    text = dump()
+    while len(text) > MAX_TOOL_OUTPUT_CHARS and included:
+        included.pop()
+        payload["returned"] = len(included)
+        payload["truncated"] = True
+        text = dump()
+    return text, included

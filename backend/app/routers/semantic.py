@@ -13,13 +13,11 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
-from sqlalchemy.exc import DataError
 from sqlalchemy.orm import Session
 
 from app import crud
-from app.ai.embeddings import TitanEmbedder, model_tag
+from app import semantic_search as semantic_search_service
 from app.ai.errors import ChatError, map_provider_error
-from app.config import settings
 from app.database import get_db
 from app.product_filters import MAX_PRICE, MAX_RAM_GB, ProductFilters
 from app.routers.chat import create_bedrock_client  # same region, timeouts and credential chain as /chat
@@ -91,19 +89,9 @@ def semantic_search(
     if errors:
         raise RequestValidationError(errors)
 
-    tag = model_tag(settings.embedding_model_id, settings.embedding_dim)
-    embedded = crud.count_embedded(db, tag)
-    if embedded == 0:  # checked before calling AWS: there is nothing to search yet
-        raise _http_error(
-            503, "embeddings_not_initialized",
-            "Semantic search isn't initialized yet: no product embeddings exist for the configured model. "
-            "Run `python -m app.migrate_embedding_dim` (once), then `python -m app.embed` "
-            "(in Docker: docker compose exec backend ...). Keyword search at /products still works.",
-        )  # fmt: skip
-
+    filters = ProductFilters(min_price=min_price, max_price=max_price, min_ram_gb=min_ram_gb)
     try:
-        embedder = TitanEmbedder(create_bedrock_client(), settings.embedding_model_id, settings.embedding_dim)
-        vector = embedder.embed(query)
+        hits = semantic_search_service.search(db, create_bedrock_client(), query, filters, limit)
     except ChatError as exc:
         raise _http_error(exc.status_code, exc.code, exc.message) from None
     except Exception as exc:
@@ -111,17 +99,10 @@ def semantic_search(
         logger.warning("Query embedding failed: %s", mapped.code)
         raise _http_error(mapped.status_code, mapped.code, mapped.message) from None
 
-    filters = ProductFilters(min_price=min_price, max_price=max_price, min_ram_gb=min_ram_gb)
-    try:
-        rows = crud.semantic_search(db, vector, tag, limit, filters)
-    except DataError:  # e.g. the column still has another vector size
-        logger.error("Semantic search query failed: vector size mismatch between EMBEDDING_DIM and the database column")
-        raise _http_error(503, "embedding_dimension_mismatch", "Semantic search is misconfigured on the server.") from None
-
     items = [
-        SemanticProduct(**ProductOut.model_validate(p).model_dump(), similarity=round(1 - distance, 4)) for p, distance in rows
+        SemanticProduct(**ProductOut.model_validate(p).model_dump(), similarity=round(1 - distance, 4)) for p, distance in hits.rows
     ]
     return SemanticSearchResponse(
-        query=query, items=items, limit=limit, embedding_model=tag, embedded_products=embedded,
+        query=query, items=items, limit=limit, embedding_model=hits.model_tag, embedded_products=hits.embedded_products,
         catalog_products=crud.count_products(db), message=None if items else NO_RESULTS_MESSAGE,
     )  # fmt: skip

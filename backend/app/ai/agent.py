@@ -17,10 +17,17 @@ tool result reports `calls_remaining`, and the loop is bounded to max_tool_calls
 
 Standard library plus a duck-typed `client` (anything with `client.converse(**kwargs)`) and
 `search_fn`: the whole protocol is unit-testable with a scripted fake and no AWS access.
+
+RAG (Module 3B): with a `semantic_fn` the model also gets `semantic_search_products` (Titan embeddings +
+pgvector, price/RAM still exact SQL filters). Both tools return database rows only; `products` in the
+result is built from those rows, de-duplicated by id, never from ids the model writes. A semantic search
+that can't run (embeddings missing, Titan error) becomes an ERROR tool result telling the model to use
+search_products instead, never an empty "no matches" result.
 """
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -29,14 +36,19 @@ from typing import Any
 from app.ai.errors import ChatError, map_provider_error
 from app.ai.prompts import SYSTEM_INSTRUCTIONS
 from app.ai.tools import (
+    RAG_TOOL_CONFIG,
+    SEMANTIC_TOOL_NAME,
     TOOL_CONFIG,
     TOOL_NAME,
     SearchArgs,
+    SemanticArgs,
     ToolArgumentError,
+    build_semantic_output,
     build_tool_output,
     error_output,
     format_product,
     parse_search_input,
+    parse_semantic_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,6 +58,13 @@ MAX_REPLY_CHARS = 4_000
 MAX_RETURNED_PRODUCTS = 20
 
 SearchFn = Callable[[SearchArgs], "tuple[Sequence[Any], int]"]
+# Returns (product_row, cosine_distance) pairs, nearest first; raises ChatError when it can't run.
+SemanticFn = Callable[[SemanticArgs], "Sequence[tuple[Any, float]]"]
+
+# Nova models may wrap reasoning in <thinking> tags; it is never shown to users.
+_THINKING = re.compile(r"<thinking>.*?(</thinking>|$)", re.DOTALL | re.IGNORECASE)
+# Replies are plain text (the UI shows them verbatim), but models still emit **bold** / __bold__ now and then.
+_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.DOTALL)
 
 
 def supports_tool_result_status(model_id: str) -> bool:
@@ -75,10 +94,14 @@ class ShoppingAgent:
         deadline_s: float = 60.0,
         send_tool_status: bool | None = None,
         clock: Callable[[], float] = time.monotonic,
+        semantic_fn: SemanticFn | None = None,
     ) -> None:
         self.client = client
         self.model_id = model_id
         self.search_fn = search_fn
+        self.semantic_fn = semantic_fn
+        self.tool_config = RAG_TOOL_CONFIG if semantic_fn is not None else TOOL_CONFIG
+        self.tool_names = [t["toolSpec"]["name"] for t in self.tool_config["tools"]]
         self.system_prompt = system_prompt
         self.max_tool_calls = max_tool_calls
         self.max_tokens = max_tokens
@@ -134,7 +157,7 @@ class ShoppingAgent:
                 modelId=self.model_id,
                 messages=messages,
                 system=[{"text": self.system_prompt}],
-                toolConfig=TOOL_CONFIG,
+                toolConfig=self.tool_config,
                 inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
             )
         except ChatError:
@@ -165,9 +188,11 @@ class ShoppingAgent:
     ) -> tuple[str, bool]:
         """Run one toolUse. Returns (output_text, succeeded)."""
         name = tool_use.get("name")
-        if name != TOOL_NAME:
+        if name not in self.tool_names:
             logger.warning("Model requested unknown tool %r", str(name)[:40])
-            return error_output("unknown_tool", [f"There is no tool with that name. The only tool is {TOOL_NAME}."]), False
+            return error_output("unknown_tool", [f"There is no tool with that name. Available tools: {', '.join(self.tool_names)}."]), False
+        if name == SEMANTIC_TOOL_NAME:
+            return self._execute_semantic(tool_use, products, tools_used, calls_remaining=calls_remaining)
 
         try:
             args = parse_search_input(tool_use.get("input"))
@@ -184,10 +209,39 @@ class ShoppingAgent:
         logger.info("search_products ran: total_matches=%d returned=%d", total, len(included))
         return output, True
 
+    def _execute_semantic(
+        self, tool_use: dict[str, Any], products: dict[int, dict[str, Any]], tools_used: list[str], *, calls_remaining: int
+    ) -> tuple[str, bool]:
+        try:
+            args = parse_semantic_input(tool_use.get("input"))
+        except ToolArgumentError as exc:
+            logger.info("%s rejected arguments: %s", SEMANTIC_TOOL_NAME, "; ".join(exc.problems))
+            return error_output("invalid_arguments", exc.problems), False
+
+        try:
+            rows = self.semantic_fn(args)  # type: ignore[misc] - only reachable when semantic_fn is set
+        except ChatError as exc:  # embeddings missing, Titan error, ...: a failure, not "no matches"
+            logger.warning("%s unavailable: %s", SEMANTIC_TOOL_NAME, exc.code)
+            return error_output("semantic_search_unavailable", [
+                f"Semantic search could not run ({exc.code}); this is NOT an empty result.",
+                f"Use {TOOL_NAME} with keywords and the stated budget/RAM instead, or tell the user semantic search is unavailable.",
+            ]), False  # fmt: skip
+
+        formatted = [{**format_product(p), "similarity": round(1 - float(d), 4)} for p, d in rows]
+        output, included = build_semantic_output(args, formatted, calls_remaining)
+        tools_used.append(SEMANTIC_TOOL_NAME)
+        for product in included:
+            products.setdefault(product["id"], product)
+        # Counts and filters only: the shopper's query text is not logged.
+        logger.info("%s ran: returned=%d max_price=%s min_ram_gb=%s limit=%d query_chars=%d",
+                    SEMANTIC_TOOL_NAME, len(included), args.max_price, args.min_ram_gb, args.limit, len(args.query))  # fmt: skip
+        return output, True
+
     @staticmethod
     def _final_text(assistant: dict[str, Any], stop_reason: Any) -> str:
         pieces = [b["text"] for b in assistant["content"] if isinstance(b, dict) and isinstance(b.get("text"), str)]
-        text = "\n".join(pieces).strip()
+        text = _THINKING.sub("", "\n".join(pieces))
+        text = _BOLD.sub(lambda m: m.group(1) or m.group(2), text).replace("**", "").strip()
         if not text:
             if stop_reason in ("content_filtered", "guardrail_intervened"):
                 raise ChatError(502, "ai_blocked", "The AI service blocked this response. Try rephrasing your question.")

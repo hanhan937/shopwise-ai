@@ -247,6 +247,44 @@ curl "http://localhost:8000/products/semantic-search?q=lightweight%20laptop%20fo
 `catalog_products` larger than `embedded_products` means some products have no embedding yet: re-run step 4.
 The keyword search at `GET /products`, the chat, the comparison and the frontend are unchanged.
 
+## Verify Module 3B (RAG chat: two search tools)
+
+The chat agent (Nova Lite, Bedrock Converse tool use) now has two tools and picks one or both per question:
+
+| Tool | For | How it searches |
+| --- | --- | --- |
+| `search_products` (2B) | exact brands/models, CPU/GPU families, purely numeric needs | SQL keyword match + exact price/RAM filters |
+| `semantic_search_products` (3B) | fuzzy needs: use cases, portability, "good for students" | Titan V2 query embedding + pgvector cosine ranking, **with the same exact SQL price/RAM filters** |
+
+Both tools return database rows only. `/chat` keeps its response shape (`reply`, `products`, `tools_used`);
+`products` holds the rows the tools returned, de-duplicated by id (semantic rows also carry `similarity`), never
+ids the model typed. If semantic search can't run (embeddings missing, Titan error/permission), the model gets an
+**error** tool result (not "no matches") and is told to fall back to `search_products`; there are no retries.
+Product descriptions are used for retrieval only and are never sent to the model.
+
+Requires Module 3A to be set up (migration + `python -m app.embed`). Then rebuild and watch the backend log:
+
+```bash
+docker compose up --build -d
+docker compose logs -f backend | grep -E "search_products|semantic_search_products|unavailable"
+```
+
+Each tool call logs one line with counts and filters only (no query text, no credentials), for example:
+
+```
+INFO app.ai.agent: semantic_search_products ran: returned=5 max_price=1200.0 min_ram_gb=16 limit=5 query_chars=38
+INFO app.ai.agent: search_products ran: total_matches=6 returned=5
+WARNING app.ai.agent: semantic_search_products unavailable: embeddings_not_initialized
+```
+
+Manual prompts for the chat at <http://localhost:3000> (the tool choice is the model's; check `tools_used` in the
+browser's network tab or the log lines above):
+
+1. Exact structured search: `Show me Lenovo laptops under $1000 with at least 16GB RAM` (expect `search_products`)
+2. Fuzzy semantic search: `I need something light and quiet for writing code on long train rides` (expect `semantic_search_products`)
+3. Combined: `A laptop that's good for a university student who travels a lot, under $900, with 16GB RAM`
+   (expect `semantic_search_products` with `max_price=900.0 min_ram_gb=16` in the log; every product must be ≤ $900 and ≥ 16 GB)
+
 ## API
 
 | Method | Path | Description |

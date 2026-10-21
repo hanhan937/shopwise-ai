@@ -247,3 +247,49 @@ def test_semantic_search_ranks_by_cosine_distance_with_sql_filters(seeded_client
     body = client.get("/products/semantic-search", params={"q": "anything", "limit": 2}).json()
     assert [p["id"] for p in body["items"]] == [a, b]
     assert body["items"][0]["similarity"] == 1.0 and body["embedded_products"] == 3
+
+
+# ----------------------------------------------------------------------------
+# Module 3B: /chat -> semantic_search_products -> real pgvector + real SQL filters (fake Nova and Titan).
+# ----------------------------------------------------------------------------
+def test_chat_semantic_tool_respects_sql_filters_on_real_database(seeded_client, monkeypatch):
+    import io
+    import json
+
+    from app.ai.embeddings import model_tag
+    from app.config import settings
+    from app.database import SessionLocal
+    from app.models import Product
+    from app.routers import chat as chat_router
+
+    client, rows = seeded_client
+    tag = model_tag(settings.embedding_model_id, settings.embedding_dim)
+    with SessionLocal() as db:
+        for i, p in enumerate(db.query(Product).order_by(Product.id)):
+            p.embedding, p.embedding_text, p.embedding_model = _unit(1, i / 10), "test", tag  # distinct similarities
+        db.commit()
+
+    class FakeAws:
+        def __init__(self):
+            self.turn = 0
+
+        def converse(self, **kwargs):
+            self.turn += 1
+            if self.turn == 1:
+                content = [{"toolUse": {"toolUseId": "s1", "name": "semantic_search_products",
+                                        "input": {"query": "light laptop for travel", "max_price": 900, "min_ram_gb": 16, "limit": 5}}}]  # fmt: skip
+                return {"stopReason": "tool_use", "output": {"message": {"role": "assistant", "content": content}}}
+            return {"stopReason": "end_turn", "output": {"message": {"role": "assistant", "content": [{"text": "Done."}]}}}
+
+        def invoke_model(self, **kwargs):
+            return {"body": io.BytesIO(json.dumps({"embedding": _unit(1, 0)}).encode())}
+
+    monkeypatch.setattr(chat_router, "create_bedrock_client", lambda: FakeAws())
+    body = client.post("/chat", json={"message": "light travel laptop under $900 with 16GB"}).json()
+
+    eligible = {r.sku for r in rows if r.price <= 900 and r.ram_gb >= 16}
+    assert body["tools_used"] == ["semantic_search_products"]
+    assert 0 < len(body["products"]) <= min(5, len(eligible))
+    assert {p["sku"] for p in body["products"]} <= eligible
+    sims = [p["similarity"] for p in body["products"]]
+    assert sims == sorted(sims, reverse=True)
