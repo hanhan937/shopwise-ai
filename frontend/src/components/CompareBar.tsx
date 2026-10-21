@@ -13,11 +13,16 @@ export default function CompareBar({ selected, onRemove, onClear, onCompare }: P
   const needed = MIN_COMPARE - selected.length;
 
   return (
-    <section aria-label="Laptops selected for comparison" className="mt-4 rounded-card border border-petrol/40 bg-petrol-tint p-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    // Fixed to the bottom of the screen so it stays visible wherever laptops are added (table or chat).
+    <section
+      aria-label="Laptops selected for comparison"
+      className="fixed inset-x-0 bottom-0 z-20 border-t border-petrol/40 bg-petrol-tint/95 shadow-[0_-4px_12px_rgba(20,33,43,0.08)] backdrop-blur"
+    >
+      <div className="mx-auto max-w-5xl px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
         <p className="text-sm font-semibold">
           Compare ({selected.length}/{MAX_COMPARE})
-          <span className="ml-2 font-normal text-ink/70">
+          <span className="ml-2 hidden font-normal text-ink/70 sm:inline">
             {needed > 0
               ? `Select ${needed} more to compare.`
               : selected.length >= MAX_COMPARE
@@ -34,9 +39,9 @@ export default function CompareBar({ selected, onRemove, onClear, onCompare }: P
           </button>
         </div>
       </div>
-      <ul className="mt-2 flex flex-wrap gap-2">
+      <ul className="mt-2 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
         {selected.map((p) => (
-          <li key={p.id} className="flex items-center gap-1 rounded-md border border-line bg-white py-1 pl-2.5 pr-1 text-sm">
+          <li key={p.id} className="flex shrink-0 items-center gap-1 rounded-md border border-line bg-white py-1 pl-2.5 pr-1 text-sm">
             <span>
               <span className="text-ink/60">{p.brand}</span> {p.name}
             </span>
@@ -51,6 +56,7 @@ export default function CompareBar({ selected, onRemove, onClear, onCompare }: P
           </li>
         ))}
       </ul>
+      </div>
     </section>
   );
 }

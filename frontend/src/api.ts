@@ -1,5 +1,5 @@
 import type { ProductQuery } from "./filters";
-import type { ComparisonAnalysis, Health, ProductList, UseCase } from "./types";
+import type { ChatProduct, ComparisonAnalysis, Health, ProductList, UseCase } from "./types";
 
 // In dev, Vite proxies /api/* to the backend (and strips the /api prefix); in Docker, nginx does the same.
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -84,7 +84,7 @@ export function getProducts(limit: number, offset: number, query: ProductQuery =
 
 export interface ChatResult {
   reply: string;
-  products: Array<Record<string, unknown>>;
+  products: ChatProduct[];
   tools_used: string[];
 }
 

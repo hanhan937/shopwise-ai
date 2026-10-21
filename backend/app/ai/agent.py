@@ -65,6 +65,8 @@ SemanticFn = Callable[[SemanticArgs], "Sequence[tuple[Any, float]]"]
 _THINKING = re.compile(r"<thinking>.*?(</thinking>|$)", re.DOTALL | re.IGNORECASE)
 # Replies are plain text (the UI shows them verbatim), but models still emit **bold** / __bold__ now and then.
 _BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.DOTALL)
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.MULTILINE)  # "### Options" -> "Options"
+_EXTRA_BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")  # 3+ line breaks -> one blank line
 
 
 def supports_tool_result_status(model_id: str) -> bool:
@@ -241,7 +243,9 @@ class ShoppingAgent:
     def _final_text(assistant: dict[str, Any], stop_reason: Any) -> str:
         pieces = [b["text"] for b in assistant["content"] if isinstance(b, dict) and isinstance(b.get("text"), str)]
         text = _THINKING.sub("", "\n".join(pieces))
-        text = _BOLD.sub(lambda m: m.group(1) or m.group(2), text).replace("**", "").strip()
+        text = _BOLD.sub(lambda m: m.group(1) or m.group(2), text).replace("**", "")
+        text = _EXTRA_BLANK_LINES.sub("\n\n", _HEADING.sub("", text))
+        text = "\n".join(line.rstrip() for line in text.splitlines()).strip()
         if not text:
             if stop_reason in ("content_filtered", "guardrail_intervened"):
                 raise ChatError(502, "ai_blocked", "The AI service blocked this response. Try rephrasing your question.")

@@ -285,6 +285,58 @@ browser's network tab or the log lines above):
 3. Combined: `A laptop that's good for a university student who travels a lot, under $900, with 16GB RAM`
    (expect `semantic_search_products` with `max_price=900.0 min_ram_gb=16` in the log; every product must be ≤ $900 and ≥ 16 GB)
 
+## Module 4A: AI quality evaluation
+
+A fixed, version-controlled scenario set plus deterministic checks that score the real `/chat` and
+`/compare/analyze` responses. Code: `backend/app/eval/`. Dataset: `backend/app/eval/scenarios.json`
+(24 scenarios; catalog facts in it are verified against `data/laptops.csv` by `tests/test_eval_dataset.py`).
+
+**Two modes**
+
+| Mode | Command | Calls AWS? | Measures |
+| --- | --- | --- | --- |
+| Offline | `pytest tests/test_eval_dataset.py tests/test_eval_checks.py tests/test_eval_runner.py` | never | that the evaluator scores correctly (good, bad and malformed responses), with scripted fakes |
+| Live | `python -m app.eval.run --live` | yes, through the running backend | real Nova Lite / Titan V2 behaviour on the scenarios |
+
+Offline pass rates say nothing about real model quality. Live mode is only ever started by hand.
+
+```bash
+cd backend
+.venv/bin/python -m app.eval.run --list                 # preview: no network, no AWS
+.venv/bin/python -m app.eval.run --live --max-cases 3   # smoke test (needs `docker compose up` running)
+.venv/bin/python -m app.eval.run --live                 # all scenarios (roughly a few cents of Bedrock usage)
+.venv/bin/python -m app.eval.run --live --category no_match   # or --only exact-01 --only mixed-01
+```
+
+The runner talks to `http://localhost:8000` (`--base-url` to change), loads the catalog from `GET /products`
+(PostgreSQL is the source of truth), sends one request at a time with a 90 s timeout (`--timeout`), never retries,
+pauses 1 s between cases (`--delay`) and keeps going when a case fails. It needs no AWS credentials itself;
+the backend makes the provider calls. Reports: `backend/eval_reports/eval-live-<UTC time>.json` and `.md`
+(git-ignored because they contain model replies; `--out` to change).
+
+**Check statuses**: every check is PASS, FAIL or UNKNOWN (not measurable). UNKNOWN is never counted as PASS.
+Case verdicts: PASS (all checks pass), INCOMPLETE (no failure, something unknown), FAIL, ERROR (request failed).
+
+| Family | What it checks |
+| --- | --- |
+| contract | the response arrived with the documented shape; plain text (no markdown) |
+| grounding | structured product ids exist and fields match the catalog; prices/RAM/storage quoted next to a single product name match it; named products came from tool results |
+| constraints | explicit max price / min RAM / brand / OS / GPU limits, using database values; structured `products` and reply text reported separately; no-match explained |
+| tool_selection | the tools that actually ran (`tools_used`): required / preferred / forbidden; a reply claiming a search is not evidence |
+| honesty | synthetic-data disclaimer; affirmative stock, benchmark, live-price or battery claims; URLs / retailers; `<thinking>` tags |
+| safety | system-prompt or secret leaks, injected prices, invented products, out-of-domain refusals |
+| comparison | `/compare/analyze` schema and types, selected ids, recommendations selected-or-null, controlled errors |
+
+Heuristic checks (marked `heuristic` in the JSON) are regular expressions: they flag likely problems and can
+produce false positives or miss problems. They cannot prove that no hallucination occurred.
+
+Known evaluator limitations (found in the first live runs, not fixed yet):
+- `honesty.synthetic_disclaimer` also triggers when the reply only repeats a product name the user typed
+  (e.g. "no stock data for the IdeaSlim 14 OLED"), which can be a false positive.
+- Negated sentences are skipped by `safety.rejects_injected_prices`, so "listed as $1, which is not realistic"
+  passes that check (a false negative; `grounding.reply_specs_match` still flags the $1).
+- Model output varies between runs: in two runs against the same server, 6 of 24 cases changed verdict.
+
 ## API
 
 | Method | Path | Description |

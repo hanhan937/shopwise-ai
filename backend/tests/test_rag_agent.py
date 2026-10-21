@@ -330,3 +330,16 @@ def test_chat_titan_failure_is_a_tool_error_and_chat_still_answers(client, monke
 )
 def test_markdown_bold_is_removed_from_the_reply(products, text, expected):
     assert make_agent(ScriptedNova(text), products)[0].run("x").reply == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("### Options\nDevBook 14 Pro", "Options\nDevBook 14 Pro"),
+        ("First.\n\n\n\nSecond.   \n\n \n\nThird.", "First.\n\nSecond.\n\nThird."),
+        ("1. DevBook 14 Pro\n   - RAM: 16GB", "1. DevBook 14 Pro\n   - RAM: 16GB"),  # list indentation is kept
+        ("Price #1 pick: DevBook", "Price #1 pick: DevBook"),  # '#' inside a line is not a heading
+    ],
+)
+def test_reply_layout_is_tidied(products, text, expected):
+    assert make_agent(ScriptedNova(text), products)[0].run("x").reply == expected

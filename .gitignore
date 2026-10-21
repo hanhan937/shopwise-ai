@@ -32,3 +32,6 @@ pgdata/
 
 # Local Docker backups
 docker-compose.backup.yml
+
+# Module 4A evaluation reports (contain generated model responses)
+backend/eval_reports/

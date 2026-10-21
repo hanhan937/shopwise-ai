@@ -6,9 +6,10 @@ import CompareBar from "./components/CompareBar";
 import ComparisonTable from "./components/ComparisonTable";
 import ProductTable from "./components/ProductTable";
 import SearchFilters from "./components/SearchFilters";
-import { MIN_COMPARE, toggleSelection } from "./compare";
+import { chatProductToProduct } from "./chatProducts";
+import { MAX_COMPARE, MIN_COMPARE, toggleSelection } from "./compare";
 import { EMPTY_FILTERS, hasActiveFilters, toQuery, type FilterValues } from "./filters";
-import type { Health, Product, ProductList } from "./types";
+import type { ChatProduct, Health, Product, ProductList } from "./types";
 
 const PAGE_SIZE = 10;
 
@@ -24,6 +25,7 @@ export default function App() {
   // Full product objects (not just ids) so the selection survives page changes and new searches.
   const [compareList, setCompareList] = useState<Product[]>([]);
   const [showCompare, setShowCompare] = useState(false);
+  const [compareRequest, setCompareRequest] = useState(0); // bumps on every Compare click, to scroll to the table
 
   const load = useCallback(async () => {
     const requestId = ++latestRequest.current;
@@ -77,6 +79,14 @@ export default function App() {
   };
   const compareIds = new Set(compareList.map((p) => p.id));
   const comparisonVisible = showCompare && compareList.length >= MIN_COMPARE;
+  const openComparison = () => {
+    setShowCompare(true);
+    setCompareRequest((n) => n + 1);
+  };
+
+  useEffect(() => {
+    if (compareRequest > 0) document.getElementById("compare-heading")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [compareRequest]);
 
   const filtersActive = hasActiveFilters(applied);
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
@@ -96,7 +106,7 @@ export default function App() {
         </p>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-8">
+      <main className={`mx-auto max-w-5xl px-4 py-8 ${compareList.length > 0 ? "pb-40" : ""}`}>
         <h1 className="text-2xl font-bold tracking-tight">Product catalog</h1>
         <p className="mt-1 max-w-xl text-sm text-ink/70">
           Search by brand, model, or specs, then narrow by price and RAM. Tick up to 3 laptops to compare them side by
@@ -107,7 +117,7 @@ export default function App() {
           <SearchFilters applied={applied} busy={loading} onApply={applyFilters} onReset={resetFilters} />
         </div>
 
-        <CompareBar selected={compareList} onRemove={removeFromCompare} onClear={clearCompare} onCompare={() => setShowCompare(true)} />
+        <CompareBar selected={compareList} onRemove={removeFromCompare} onClear={clearCompare} onCompare={openComparison} />
         {comparisonVisible && (
           <ComparisonTable products={compareList} onRemove={removeFromCompare} onClose={() => setShowCompare(false)} />
         )}
@@ -181,7 +191,11 @@ export default function App() {
             </>
           ) : null}
         </div>
-        <AIChat />
+        <AIChat
+          selectedIds={compareIds}
+          compareFull={compareList.length >= MAX_COMPARE}
+          onToggleCompare={(p: ChatProduct) => toggleCompare(chatProductToProduct(p))}
+        />
       </main>
     </div>
   );

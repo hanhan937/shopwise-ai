@@ -52,3 +52,23 @@ export interface ComparisonAnalysis {
   warnings: string[];
   data_notice: string;
 }
+
+/** A product row in a /chat response (database values returned by the agent's search tools). */
+export interface ChatProduct {
+  id: number;
+  sku: string;
+  brand: string;
+  name: string;
+  price: number;
+  cpu: string;
+  gpu: string;
+  ram_gb: number;
+  storage_gb: number;
+  storage_type: string;
+  weight_kg: number;
+  os: string;
+  best_for: string[];
+  source_name: string;
+  is_mock: boolean;
+  similarity?: number; // only for semantic_search_products results
+}
