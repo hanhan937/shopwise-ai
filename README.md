@@ -1,5 +1,7 @@
 # ShopWise AI
 
+**[Live Demo](https://shopwise-ai.pages.dev)** | **[Source Code](https://github.com/hanhan937/shopwise-ai)**
+
 A laptop shopping assistant: search and filter a small catalog, compare up to three laptops side by side, and ask
 an AI assistant for recommendations that are grounded in the catalog database.
 
@@ -10,7 +12,6 @@ for chat, Titan Text Embeddings V2 for semantic search).
 > catalog is bundled into the page, search/filters/comparison run in the browser, and **AI chat and AI analysis show
 > preset or rule-based example responses, clearly labelled**. The real Amazon Bedrock features (Nova Lite agent,
 > Titan embeddings, pgvector RAG, AI comparison) run only in the local Docker version below.
-<!-- Add the Pages URL here after deploying: **Live demo:** https://<project>.pages.dev -->
 
 > **Mock data disclaimer.** The catalog has 41 laptops. Brands are real, but every model name, specification and
 > price is invented for demonstration. Nothing here is a real offer, price, stock level or benchmark, and the UI
