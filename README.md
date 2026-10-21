@@ -172,6 +172,81 @@ In the browser, above the table you now have a search box, min/max price, a min 
 match your filters" message with a **Reset filters** button); min `900` with max `100` (inline error, no request sent).
 Filters stay active while you use Previous/Next, and a new search always starts on page 1.
 
+## Verify Module 3A (semantic search)
+
+Semantic search ranks products by **meaning** instead of exact keywords: "quiet laptop for coding on trains"
+finds laptops whose description and tags fit, even if no product contains those words.
+
+- **Embeddings**: Amazon Titan Text Embeddings V2 (`amazon.titan-embed-text-v2:0`, 1024 dimensions, normalized)
+  through the Bedrock **InvokeModel** API, with the same Bedrock client and credentials as the chat agent
+  (`AWS_BEARER_TOKEN_BEDROCK`). The Nova Lite chat agent is unchanged. Settings: `EMBEDDING_MODEL_ID`, `EMBEDDING_DIM`.
+- **What is embedded**: brand, model, CPU, GPU, RAM, storage, display, weight, OS, use-case tags and the
+  description (stored in `embedding_text`). **Price is not embedded**: price and RAM are exact SQL filters
+  applied before ranking (hybrid search), so a result never breaks them.
+- **No vector index yet**: with 41 rows an exact scan is faster than an index. Add
+  `CREATE INDEX ON products USING hnsw (embedding vector_cosine_ops)` when the catalog grows to tens of thousands.
+- **Never automatic**: the backend does not alter the database on startup and does not call Titan on startup.
+  The migration and embedding generation below are run by hand.
+
+### Required AWS permission (do this first)
+
+If your IAM policy only allows `amazon.nova-lite-v1:0`, Titan calls fail with `bedrock_access_denied`. The
+identity behind `AWS_BEARER_TOKEN_BEDROCK` (the IAM user the Bedrock API key belongs to) also needs
+`bedrock:InvokeModel` on the Titan model. Add a statement like this to that identity's policy yourself in the
+AWS console (this project never changes AWS settings), and check in **Bedrock → Model catalog** that
+Titan Text Embeddings V2 is available in your region:
+
+```json
+{
+  "Sid": "ShopWiseTitanEmbeddings",
+  "Effect": "Allow",
+  "Action": "bedrock:InvokeModel",
+  "Resource": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+}
+```
+
+Use your `AWS_REGION` in the ARN if it isn't `us-east-1`.
+
+### Docker acceptance steps
+
+```bash
+# 1. Rebuild with the new code (the database and its data are kept)
+docker compose up --build -d
+
+# 2. One-time migration: vector(1536) -> vector(1024). Check first, then apply.
+#    Safe to repeat; stops without changes if any embedding is stored.
+docker compose exec backend python -m app.migrate_embedding_dim --check
+docker compose exec backend python -m app.migrate_embedding_dim
+
+# 3. Preview the texts that will be embedded (no AWS calls, no writes)
+docker compose exec backend python -m app.embed --dry-run
+
+# 4. Generate embeddings: the only step that calls Titan (41 short texts, well under $0.001)
+docker compose exec backend python -m app.embed
+docker compose exec backend python -m app.embed   # again: should report embedded=0 unchanged=41
+```
+
+Expected output: step 2 `Resized products.embedding from vector(1536) to vector(1024)` (a second run says
+`already vector(1024). Nothing to do.`); step 4 `embedded=41 unchanged=0`. A database created from scratch with
+this version already has `vector(1024)`, so step 2 just reports that nothing is needed.
+
+**5. Search** in <http://localhost:8000/docs> → `GET /products/semantic-search` → *Try it out*, or:
+
+```bash
+curl "http://localhost:8000/products/semantic-search?q=lightweight%20laptop%20for%20programming%20and%20travel&max_price=1200&min_ram_gb=16&limit=3"
+```
+
+| Response | Meaning |
+| --- | --- |
+| `200` with `items` | Ranked results. Each is a normal product plus `similarity` (1 = same meaning; compare within one query only). |
+| `200` with `items: []` and `message` | Search works, but no embedded laptop passes the price/RAM filters. |
+| `503 embeddings_not_initialized` | Steps 2 and 4 haven't been run yet. AWS is not called. |
+| `422` | Invalid request: blank or overlong `q`, min > max price, non-finite numbers, unknown or repeated parameters (a typo such as `maxprice` is rejected instead of silently dropping the filter). |
+| `503 bedrock_access_denied` | The IAM permission above is missing. |
+
+`catalog_products` larger than `embedded_products` means some products have no embedding yet: re-run step 4.
+The keyword search at `GET /products`, the chat, the comparison and the frontend are unchanged.
+
 ## API
 
 | Method | Path | Description |
@@ -211,5 +286,10 @@ Other errors use `{"detail": {"code", "message"}}` (for example `database_unavai
 - **`connection refused`**: Postgres isn't up. Run `docker compose up -d db` and wait a few seconds.
 - **Port 5432 already in use**: stop your local Postgres, or change the host port in `docker-compose.yml`.
 - **Frontend shows "API offline" in dev**: the backend must be on port 8000 (or set `VITE_API_PROXY`).
-- **Changed `EMBEDDING_DIM` after the first run**: the column size is fixed at table creation. Run
-  `docker compose down -v` to recreate the database.
+- **`python -m app.embed` says the column is `vector(1536)`**: run `python -m app.migrate_embedding_dim` first.
+- **The migration says `STOPPED ... embedding(s) are stored`**: nothing was changed. Only if you really want to
+  start over, clear them (`UPDATE products SET embedding = NULL, embedding_text = NULL, embedding_model = NULL;`)
+  and run the migration again.
+- **Semantic search returns `503 embeddings_not_initialized`**: run the migration, then `python -m app.embed`.
+- **Local backend (option B) says `role "shopwise" does not exist`**: another PostgreSQL (e.g. Homebrew) is using
+  port 5432 on localhost. Stop it (`brew services stop postgresql`) or use Docker (option A).

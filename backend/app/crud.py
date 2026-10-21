@@ -28,6 +28,27 @@ def get_products_by_ids(db: Session, ids: list[int]) -> list[Product]:
     return [found[i] for i in ids if i in found]
 
 
+def count_embedded(db: Session, model_tag: str) -> int:
+    """Products that have an embedding made by `model_tag` (vectors from other models aren't comparable)."""
+    stmt = select(func.count()).select_from(Product).where(Product.embedding.is_not(None), Product.embedding_model == model_tag)
+    return int(db.scalar(stmt) or 0)
+
+
+def semantic_search(
+    db: Session, query_vector: list[float], model_tag: str, limit: int, filters: ProductFilters | None = None
+) -> list[tuple[Product, float]]:
+    """Hybrid search: exact SQL filters (price, RAM) first, then rank by cosine distance (pgvector `<=>`).
+
+    Returns (product, distance) pairs, nearest first; distance is 0 for identical meaning, up to 2.
+    Ties are broken by id so results are stable.
+    """
+    distance = Product.embedding.cosine_distance(query_vector).label("distance")
+    stmt = select(Product, distance).where(Product.embedding.is_not(None), Product.embedding_model == model_tag)
+    if filters is not None:
+        stmt = stmt.where(*build_conditions(filters))
+    return [(p, float(d)) for p, d in db.execute(stmt.order_by(distance, Product.id).limit(limit))]
+
+
 def ping(db: Session) -> None:
     db.execute(text("SELECT 1"))
 

@@ -9,9 +9,12 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://shopwise:shopwise@localhost:5432/shopwise"
 
-    # Size of the pgvector column. The column exists from Module 1 (so the schema is
-    # stable) but stays empty until Module 2 adds embeddings.
-    embedding_dim: int = 1536
+    # Semantic search (Module 3A): Amazon Titan Text Embeddings V2 through the same Bedrock
+    # client and credentials as the chat agent. V2 supports 256, 512 or 1024 dimensions; the
+    # pgvector column size follows embedding_dim. New databases get it directly; databases created
+    # with Module 1's vector(1536) are resized once by hand: python -m app.migrate_embedding_dim
+    embedding_model_id: str = "amazon.titan-embed-text-v2:0"
+    embedding_dim: int = 1024
 
     # Load data/laptops.csv on startup when the products table is empty.
     auto_ingest: bool = True

@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.database import SessionLocal, init_db
-from app.routers import chat, compare, health, products
+from app.routers import chat, compare, health, products, semantic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("shopwise")
@@ -67,5 +67,6 @@ async def unhandled_error(_: Request, exc: Exception) -> JSONResponse:
 
 app.include_router(health.router)
 app.include_router(products.router)
+app.include_router(semantic.router)
 app.include_router(chat.router)
 app.include_router(compare.router)
