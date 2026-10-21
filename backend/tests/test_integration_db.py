@@ -156,3 +156,94 @@ def test_invalid_filters_are_rejected_before_touching_the_database(seeded_client
     r = client.get("/products", params={"min_price": 900, "max_price": 100})
     assert r.status_code == 422 and "min_price" in r.text
     assert client.get("/products", params={"min_ram_gb": 0}).status_code == 422
+
+
+# ----------------------------------------------------------------------------
+# Module 3A: embedding column size and pgvector ranking against real PostgreSQL.
+# Vectors are hand-made (no AWS): with unit vectors the cosine distances are known exactly.
+# ----------------------------------------------------------------------------
+def _column_type(db):
+    return db.scalar(text(
+        "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid='products'::regclass AND attname='embedding'"
+    ))  # fmt: skip
+
+
+def test_migration_command_resizes_only_while_empty_and_is_repeatable(seeded_client):
+    from app.config import settings
+    from app.database import SessionLocal, engine
+    from app.migrate_embedding_dim import migrate
+
+    with SessionLocal() as db:
+        assert _column_type(db) == f"vector({settings.embedding_dim})"  # new databases are created at the right size
+        db.execute(text("ALTER TABLE products ALTER COLUMN embedding TYPE vector(1536)"))  # like a Module 1 database
+        db.commit()
+
+    assert migrate(engine, 1024, check_only=True).status == "would_migrate"
+    with SessionLocal() as db:
+        assert _column_type(db) == "vector(1536)"  # --check changed nothing
+
+    first = migrate(engine, 1024)
+    assert (first.status, first.before, first.after) == ("migrated", "vector(1536)", "vector(1024)")
+    assert migrate(engine, 1024).status == "already_done"  # repeatable
+
+    with SessionLocal() as db:
+        db.execute(text("ALTER TABLE products ALTER COLUMN embedding TYPE vector(1536)"))
+        db.execute(text("UPDATE products SET embedding = array_fill(0.1, ARRAY[1536])::vector WHERE id = (SELECT min(id) FROM products)"))
+        db.commit()
+    blocked = migrate(engine, 1024)
+    assert (blocked.status, blocked.stored_vectors) == ("blocked", 1)
+    with SessionLocal() as db:
+        assert _column_type(db) == "vector(1536)"  # data present: left alone
+        assert db.scalar(text("SELECT count(embedding) FROM products")) == 1
+        db.execute(text("UPDATE products SET embedding = NULL"))
+        db.commit()
+    assert migrate(engine, settings.embedding_dim).status == "migrated"  # restore for the other tests
+    with pytest.raises(ValueError):
+        migrate(engine, 1536)  # Titan V2 can't produce 1536
+
+
+def _unit(*weights, dim=1024):
+    norm = sum(w * w for w in weights) ** 0.5
+    return [w / norm for w in weights] + [0.0] * (dim - len(weights))
+
+
+def test_semantic_search_ranks_by_cosine_distance_with_sql_filters(seeded_client, monkeypatch):
+    import io
+    import json
+
+    from app import crud
+    from app.ai.embeddings import model_tag
+    from app.config import settings
+    from app.database import SessionLocal
+    from app.models import Product
+    from app.product_filters import ProductFilters
+    from app.routers import semantic as semantic_router
+
+    client, _ = seeded_client
+    tag = model_tag(settings.embedding_model_id, settings.embedding_dim)
+    with SessionLocal() as db:
+        a, b, c, other = db.scalars(text("SELECT id FROM products ORDER BY price DESC LIMIT 4")).all()
+        vectors = {a: _unit(1, 0), b: _unit(1, 1), c: _unit(0, 1), other: _unit(1, 0)}
+        for pid, vec in vectors.items():
+            p = db.get(Product, pid)
+            p.embedding, p.embedding_text = vec, "test"
+            p.embedding_model = tag if pid != other else "some-other-model:1024"  # must be ignored
+        db.commit()
+        price_of_a = float(db.get(Product, a).price)
+
+        rows = crud.semantic_search(db, _unit(1, 0), tag, limit=10)
+        assert [p.id for p, _ in rows] == [a, b, c]
+        assert [round(d, 4) for _, d in rows] == [0.0, 0.2929, 1.0]
+        assert crud.count_embedded(db, tag) == 3
+
+        cheaper = crud.semantic_search(db, _unit(1, 0), tag, 10, ProductFilters(max_price=price_of_a - 0.01))
+        assert a not in [p.id for p, _ in cheaper]
+
+    class FakeTitan:
+        def invoke_model(self, **kwargs):
+            return {"body": io.BytesIO(json.dumps({"embedding": _unit(1, 0)}).encode())}
+
+    monkeypatch.setattr(semantic_router, "create_bedrock_client", lambda: FakeTitan())
+    body = client.get("/products/semantic-search", params={"q": "anything", "limit": 2}).json()
+    assert [p["id"] for p in body["items"]] == [a, b]
+    assert body["items"][0]["similarity"] == 1.0 and body["embedded_products"] == 3
