@@ -19,9 +19,12 @@ for chat, Titan Text Embeddings V2 for semantic search).
 
 ## Screenshots
 
-| Catalog and comparison | AI chat with product cards |
+| Comparison with highlights | Chat with product cards |
 | --- | --- |
-| ![Catalog search with the side-by-side comparison](docs/screenshots/catalog-compare.png) | ![AI chat answer with product cards](docs/screenshots/chat.png) |
+| ![Side-by-side comparison with the rule-based demo analysis](docs/screenshots/catalog-compare.png) | ![Chat answer with product cards and Add to compare](docs/screenshots/chat.png) |
+
+Both screenshots are from the online demo, so the chat answer is a preset and the analysis is rule-based.
+Locally, the same views are filled by Amazon Bedrock.
 
 ## Features
 
