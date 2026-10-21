@@ -7,6 +7,7 @@ import ComparisonTable from "./components/ComparisonTable";
 import ProductTable from "./components/ProductTable";
 import SearchFilters from "./components/SearchFilters";
 import { chatProductToProduct } from "./chatProducts";
+import { DEMO_MODE } from "./demo/mode";
 import { MAX_COMPARE, MIN_COMPARE, toggleSelection } from "./compare";
 import { EMPTY_FILTERS, hasActiveFilters, toQuery, type FilterValues } from "./filters";
 import type { ChatProduct, Health, Product, ProductList } from "./types";
@@ -104,6 +105,11 @@ export default function App() {
         <p className="bg-amber-tint px-4 py-1.5 text-center text-xs text-amber-ink">
           Mock data: every laptop, spec, and price here is synthetic and for demonstration only.
         </p>
+        {DEMO_MODE && (
+          <p className="border-t border-amber-ink/20 bg-amber-tint px-4 py-1.5 text-center text-xs font-semibold text-amber-ink">
+            Demo Mode: static site. AI chat and AI analysis show preset examples; real Amazon Bedrock runs only in the local Docker version.
+          </p>
+        )}
       </header>
 
       <main className={`mx-auto max-w-5xl px-4 py-8 ${compareList.length > 0 ? "pb-40" : ""}`}>

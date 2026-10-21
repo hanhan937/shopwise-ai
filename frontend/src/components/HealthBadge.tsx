@@ -1,3 +1,4 @@
+import { DEMO_MODE } from "../demo/mode";
 import type { Health } from "../types";
 
 interface Props {
@@ -9,7 +10,10 @@ export default function HealthBadge({ health, offline }: Props) {
   let text = "Checking API…";
   let tone = "border-line text-ink/60";
 
-  if (offline) {
+  if (DEMO_MODE) {
+    text = "Demo mode · static data";
+    tone = "border-amber-ink/30 bg-amber-tint text-amber-ink";
+  } else if (offline) {
     text = "API offline";
     tone = "border-danger/30 bg-danger-tint text-danger";
   } else if (health && health.status === "ok") {

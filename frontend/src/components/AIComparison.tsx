@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, analyzeComparison } from "../api";
 import { MAX_COMPARE, MIN_COMPARE, analysisMatches } from "../compare";
+import { DEMO_MODE } from "../demo/mode";
 import type { ComparisonAnalysis, Product, UseCase } from "../types";
 
 const USE_CASES: Array<{ value: UseCase; label: string }> = [
@@ -90,7 +91,7 @@ export default function AIComparison({ products }: { products: Product[] }) {
           </select>
         </div>
         <button type="button" className="btn-primary" disabled={!canAnalyze || busy} onClick={() => void analyze()}>
-          {busy ? "Analyzing…" : "Analyze with AI"}
+          {busy ? "Analyzing…" : DEMO_MODE ? "Analyze (demo, rule-based)" : "Analyze with AI"}
         </button>
       </div>
 

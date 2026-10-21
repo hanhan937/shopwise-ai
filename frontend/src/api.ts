@@ -1,3 +1,4 @@
+import { DEMO_MODE } from "./demo/mode";
 import type { ProductQuery } from "./filters";
 import type { ChatProduct, ComparisonAnalysis, Health, ProductList, UseCase } from "./types";
 
@@ -70,9 +71,14 @@ async function request<T>(path: string, timeoutMs = 10_000): Promise<T> {
   return (await res.json()) as T;
 }
 
-export const getHealth = () => request<Health>("/health");
+// Demo mode (static build): each call is answered in the browser by ./demo/demoApi; nothing is fetched.
+// The dynamic import keeps the demo code and catalog out of the regular build.
+const demo = () => import("./demo/demoApi");
 
-export function getProducts(limit: number, offset: number, query: ProductQuery = {}) {
+export const getHealth = () => (DEMO_MODE ? demo().then((d) => d.getHealth()) : request<Health>("/health"));
+
+export function getProducts(limit: number, offset: number, query: ProductQuery = {}): Promise<ProductList> {
+  if (DEMO_MODE) return demo().then((d) => d.getProducts(limit, offset, query));
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (query.q) params.set("q", query.q);
   if (query.minPrice !== undefined) params.set("min_price", String(query.minPrice));
@@ -89,6 +95,7 @@ export interface ChatResult {
 }
 
 export async function sendChat(message: string): Promise<ChatResult> {
+  if (DEMO_MODE) return (await demo()).sendChat(message);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 75000);
   try {
@@ -113,6 +120,7 @@ export async function sendChat(message: string): Promise<ChatResult> {
 
 /** AI comparison of 2-3 products. The server looks the specs up itself; only ids are sent. */
 export async function analyzeComparison(productIds: number[], useCase: UseCase, signal?: AbortSignal): Promise<ComparisonAnalysis> {
+  if (DEMO_MODE) return (await demo()).analyzeComparison(productIds, useCase, signal);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 75000);
   const abort = () => controller.abort();
