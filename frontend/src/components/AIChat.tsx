@@ -33,8 +33,17 @@ export default function AIChat() {
       <p className="mt-1 text-sm text-ink/70">Ask about laptops in our synthetic demonstration catalog. Prices and specs are not real-world offers.</p>
       <div className="mt-4 space-y-3" aria-live="polite">
         {messages.map((msg, i) => (
-          <div key={i} className="rounded-card border border-line p-3">
-            <p className="mb-1 text-xs font-semibold">{msg.from === "you" ? "You" : "ShopWise AI"}</p>
+          <div
+            key={i}
+            className={
+              msg.from === "you"
+                ? "ml-auto max-w-[85%] rounded-card border border-petrol/30 bg-petrol-tint p-3"
+                : "mr-auto max-w-[85%] rounded-card border border-line bg-paper p-3"
+            }
+          >
+            <p className={`mb-1 text-xs font-semibold ${msg.from === "you" ? "text-petrol-dark" : "text-ink/70"}`}>
+              {msg.from === "you" ? "You" : "ShopWise AI"}
+            </p>
             <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
           </div>
         ))}
